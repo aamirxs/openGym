@@ -189,7 +189,10 @@ export function httpAdapter(spec) {
             continue;
           }
           // Some OpenAI-compatible servers reject the JSON-mode flag outright. Once, without it.
-          if (res.status === 400 && spec.withoutJsonMode && !retriedWithoutJsonMode && /response_format|json_schema|json_object|json mode|structured/i.test(msg)) {
+          // Some gateways reject the schema with a generic 400 that names only the model
+          // (9router does this for some free models), so a 400 is enough to retry once in
+          // plain JSON mode. A genuinely bad request fails again with the same error below.
+          if (res.status === 400 && spec.withoutJsonMode && !retriedWithoutJsonMode) {
             body = spec.withoutJsonMode(body);
             retriedWithoutJsonMode = true;
             continue;
