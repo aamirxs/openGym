@@ -1,0 +1,107 @@
+name: Build unsigned iOS IPA
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-ipa:
+    runs-on: macos-15
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Show toolchain
+        run: |
+          xcodebuild -version
+          node -v
+          npm -v
+          pod --version
+
+      - name: Install JS dependencies
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build mobile bundle and sync iOS
+        working-directory: frontend
+        run: npm run build:mobile
+
+      - name: Show build schemes
+        working-directory: frontend/ios/App
+        run: xcodebuild -workspace App.xcworkspace -list
+
+      - name: Read version
+        id: meta
+        working-directory: frontend
+        run: |
+          set -eu
+          VER="$(node -p "require('./package.json').version")"
+          BUILD="$(sed -n 's/^ *versionCode \([0-9]*\).*/\1/p' android/app/build.gradle | head -1)"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "openGym $VER ($BUILD)"
+
+      - name: Archive app without signing
+        working-directory: frontend/ios/App
+        run: |
+          set -eu
+          xcodebuild \
+            -workspace App.xcworkspace \
+            -scheme App \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -archivePath "$PWD/build/App.xcarchive" \
+            MARKETING_VERSION="${{ steps.meta.outputs.version }}" \
+            CURRENT_PROJECT_VERSION="${{ steps.meta.outputs.build }}" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            ENABLE_USER_SCRIPT_SANDBOXING=NO \
+            archive
+
+      - name: Package IPA
+        run: |
+          set -eu
+          VER="${{ steps.meta.outputs.version }}"
+          cd frontend/ios/App
+          test -d build/App.xcarchive/Products/Applications/App.app
+          rm -rf Payload
+          mkdir Payload
+          cp -R build/App.xcarchive/Products/Applications/App.app Payload/
+          IPA="$GITHUB_WORKSPACE/openGym-$VER-unsigned.ipa"
+          rm -f "$IPA"
+          zip -qry "$IPA" Payload
+          cd "$GITHUB_WORKSPACE"
+          shasum -a 256 "$IPA" | tee "$IPA.sha256"
+          ls -lh "$IPA"
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: openGym-ios-unsigned
+          path: |
+            openGym-*.ipa
+            openGym-*.ipa.sha256
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Summary
+        run: |
+          {
+            echo "### openGym iOS (unsigned)"
+            echo ""
+            echo "- Version: ${{ steps.meta.outputs.version }} (${{ steps.meta.outputs.build }})"
+            echo "- Artifact: \`openGym-${{ steps.meta.outputs.version }}-unsigned.ipa\`"
+            echo ""
+            echo "Sign it with Sideloadly/AltStore using your Apple ID before installing."
+          } >> "$GITHUB_STEP_SUMMARY"
